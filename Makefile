@@ -1,0 +1,1 @@
+g++ main.cpp -D PROC_COUNT=$(grep -c ^processor /proc/cpuinfo)
