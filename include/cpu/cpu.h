@@ -14,6 +14,7 @@ struct core_usage_t {
     double utilization;
 };
 
+//Read /proc/stat and load statistics
 void poll_cpu_usage(std::array<core_usage_t, CORE_COUNT>& cores, uint64_t milliseconds);
 
 #endif
