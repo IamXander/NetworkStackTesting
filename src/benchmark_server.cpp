@@ -14,5 +14,6 @@ void cpu_poll_loop(std::atomic<bool>& poll) {
 int main() {
     std::atomic<bool> poll = true;
     std::thread poll_thread(cpu_poll_loop, std::ref(poll));
+    recv_data(8080, 10000000, 1);
     poll_thread.join();
 }

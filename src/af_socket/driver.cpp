@@ -2,17 +2,17 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <iostream>
 #include <string.h>
+#include <chrono>
 
-result_t recv_data() {
+result_t recv_data(uint16_t port, uint64_t packets, uint64_t packet_size) {
     int server_fd, new_socket, valread;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
-    char buffer[1024] = {0};
-    char *hello = "Hello from server";
-    uint16_t port = 8080;
+    uint8_t buffer[packet_size];
        
     // Creating socket file descriptor 
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
@@ -41,20 +41,24 @@ result_t recv_data() {
     if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
         perror("accept");
         exit(EXIT_FAILURE);
-    } 
-    valread = read( new_socket , buffer, 1024);
-    printf("%s\n",buffer );
-    send(new_socket , hello , strlen(hello) , 0 );
-    printf("Hello message sent\n");
-    return 0;
+    }
+    auto start = std::chrono::system_clock::now();
+    for (uint64_t i = 0; i < packets; ++i) {
+        valread = recv(new_socket, buffer, packet_size, MSG_WAITALL);
+    }
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<uint64_t, std::nano> diff = end - start;
+    result_t r;
+    r.nanos = diff.count();
+    std::cout << "Nanos: " << r.nanos << std::endl;
+    return r;
 }
 
-result_t send_data() {
+int send_data(std::string ip, uint16_t port, uint64_t packets, uint64_t packet_size) {
     struct sockaddr_in address;
     int sock = 0, valread;
     struct sockaddr_in serv_addr;
-    char *hello = "Hello from client";
-    char buffer[1024] = {0};
+    char buffer[packet_size] = {0};
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { 
         printf("\n Socket creation error \n");
         return -1;
@@ -63,10 +67,10 @@ result_t send_data() {
     memset(&serv_addr, '0', sizeof(serv_addr));
    
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
+    serv_addr.sin_port = htons(port);
        
     // Convert IPv4 and IPv6 addresses from text to binary form 
-    if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0) { 
+    if(inet_pton(AF_INET, ip.c_str(), &serv_addr.sin_addr) <= 0) { 
         printf("\nInvalid address/ Address not supported \n");
         return -1;
     } 
@@ -74,10 +78,12 @@ result_t send_data() {
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) { 
         printf("\nConnection Failed \n");
         return -1;
-    } 
-    send(sock , hello , strlen(hello) , 0 );
-    printf("Hello message sent\n");
-    valread = read( sock , buffer, 1024);
-    printf("%s\n",buffer );
+    }
+    std::cout << "Starting data send..." << std::endl;
+    for (uint64_t i = 0; i < packets; ++i) {
+        valread = send(sock, buffer, packet_size, 0);
+    }
+    std::cout << "Sent all data..." << std::endl;
+    std::cout << valread << std::endl;
     return 0;
 }

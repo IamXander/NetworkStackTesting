@@ -2,6 +2,7 @@
 #define DRIVER_H
 
 #include <cstdint>
+#include <string>
 
 struct result_t {
     bool success;
@@ -11,7 +12,7 @@ struct result_t {
     uint64_t bps;
 };
 
-result_t send_data(uint64_t packets, uint64_t packet_size);
-result_t recv_data(uint64_t packets, uint64_t packet_size);
+int send_data(std::string ip, uint16_t port, uint64_t packets, uint64_t packet_size);
+result_t recv_data(uint16_t port, uint64_t packets, uint64_t packet_size);
 
 #endif

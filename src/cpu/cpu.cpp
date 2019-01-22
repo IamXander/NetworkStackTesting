@@ -6,7 +6,6 @@
 #include <unistd.h>
 #include <vector>
 #include <cassert>
-#include <chrono>
 #include <thread>
 
 std::vector<uint64_t> get_cpu_times() {
