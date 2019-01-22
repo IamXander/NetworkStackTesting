@@ -8,7 +8,7 @@
 #include <cassert>
 #include <chrono>
 #include <thread>
- 
+
 std::vector<uint64_t> get_cpu_times() {
     std::ifstream proc_stat("/proc/stat");
     while (proc_stat.get() != ' ');
@@ -16,7 +16,7 @@ std::vector<uint64_t> get_cpu_times() {
     for (uint64_t time; proc_stat >> time; times.push_back(time));
     return times;
 }
- 
+
 void get_cpu_times(uint64_t &idle_time, uint64_t &total_time) {
     const std::vector<uint64_t> cpu_times = get_cpu_times();
     assert(cpu_times.size() >= 4);
