@@ -1,3 +1,12 @@
 [submodule "boost"]
 	path = boost
 	url = https://github.com/boostorg/boost.git
+[submodule "dpdk-stable"]
+	path = dpdk-stable
+	url = git://dpdk.org/dpdk-stable
+[submodule "numactl"]
+	path = numactl
+	url = https://github.com/numactl/numactl.git
+[submodule "f-stack"]
+	path = f-stack
+	url = https://github.com/F-Stack/f-stack.git
