@@ -1,4 +1,4 @@
-CXXFALGS = g++ -g -pthread -std=c++17 -D CORE_COUNT=8 -I include -I boost
+CXXFALGS = g++ -O2 -g -pthread -std=c++17 -D CORE_COUNT=8 -I include -I boost
 
 default: benchmark_af_socket_server.out benchmark_af_socket_client.out benchmark_boost_server.out benchmark_boost_client.out
 
