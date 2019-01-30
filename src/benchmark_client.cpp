@@ -2,10 +2,13 @@
 
 #include <chrono>
 #include <iostream>
+#include <string>
 
-int main() {
+int main(int argv, char** argc) {
+    if (argv != 2) return 1;
+    std::string ip(argc[1]);
     auto start = std::chrono::system_clock::now();
-    send_data("127.0.0.1", 8080, 10000000, 1000);
+    send_data(ip, 8080, 10000000, 1000);
     auto end = std::chrono::system_clock::now();
     std::chrono::duration<uint64_t, std::nano> diff = end - start;
     result_t r;
