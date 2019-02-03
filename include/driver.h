@@ -13,6 +13,6 @@ struct result_t {
 };
 
 int send_data(std::string ip, uint16_t port, uint64_t packets, uint64_t packet_size);
-result_t recv_data(uint16_t port, uint64_t packets, uint64_t packet_size);
+result_t recv_data(uint16_t port);
 
 #endif

@@ -1,18 +1,21 @@
 #include "driver.h"
 
+#include <cassert>
+#include <chrono>
+#include <iostream>
+
 #include <sys/socket.h>
+#include <sys/sendfile.h>
+#include <unistd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <iostream>
 #include <string.h>
-#include <chrono>
 
-result_t recv_data(uint16_t port, uint64_t packets, uint64_t packet_size) {
+result_t recv_data(uint16_t port) {
     int server_fd, new_socket, valread;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
-    uint8_t buffer[packet_size];
        
     // Creating socket file descriptor 
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
@@ -42,6 +45,13 @@ result_t recv_data(uint16_t port, uint64_t packets, uint64_t packet_size) {
         perror("accept");
         exit(EXIT_FAILURE);
     }
+	uint64_t packets_and_size[2];
+	valread = recv(new_socket, packets_and_size, sizeof(packets_and_size), MSG_WAITALL);
+	assert(valread == sizeof(packets_and_size));
+	uint64_t packets = packets_and_size[0];
+	uint64_t packet_size = packets_and_size[1];
+	uint8_t buffer[packet_size];
+
     auto start = std::chrono::system_clock::now();
     for (uint64_t i = 0; i < packets; ++i) {
         valread = recv(new_socket, buffer, packet_size, MSG_WAITALL);
@@ -50,7 +60,6 @@ result_t recv_data(uint16_t port, uint64_t packets, uint64_t packet_size) {
     std::chrono::duration<uint64_t, std::nano> diff = end - start;
     result_t r;
     r.nanos = diff.count();
-    std::cout << "Nanos: " << r.nanos << std::endl;
     return r;
 }
 
@@ -58,7 +67,6 @@ int send_data(std::string ip, uint16_t port, uint64_t packets, uint64_t packet_s
     struct sockaddr_in address;
     int sock = 0, valread;
     struct sockaddr_in serv_addr;
-    char buffer[packet_size] = {0};
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { 
         printf("\n Socket creation error \n");
         return -1;
@@ -79,11 +87,48 @@ int send_data(std::string ip, uint16_t port, uint64_t packets, uint64_t packet_s
         printf("\nConnection Failed \n");
         return -1;
     }
+	valread = send(sock, &packets, sizeof(packets), 0);
+	assert(valread == sizeof(packets));
+	valread = send(sock, &packet_size, sizeof(packet_size), 0);
+	assert(valread == sizeof(packet_size));
+
+	#ifdef SEND_FILE
+		char filename_template[11] = "NST.XXXXXX";
+		int buffer_fd = mkstemp(filename_template);
+		if (buffer_fd == -1) {
+			std::cout << "ERROR 1" << std::endl;
+			return -1;
+		}
+		if (unlink(filename_template) < 0) {
+			std::cout << "ERROR 2" << std::endl;
+			return -1;
+		}
+		if (ftruncate(buffer_fd, packet_size) < 0) {
+			std::cout << "ERROR 3" << std::endl;
+			return -1;
+		}
+	#else
+		char buffer[packet_size];
+		memset(buffer, 0, packet_size);
+	#endif
+
     std::cout << "Starting data send..." << std::endl;
     for (uint64_t i = 0; i < packets; ++i) {
-        valread = send(sock, buffer, packet_size, 0);
+		#ifdef SEND_FILE
+			valread = 0;
+			while (valread < packet_size)
+				valread += sendfile(sock, buffer_fd, NULL, packet_size);
+			std::cout << valread << std::endl;
+			//TODO: this is borked
+		#else
+        	valread = send(sock, buffer, packet_size, 0);
+		#endif
+		// assert(valread == packet_size);
     }
-    std::cout << "Sent all data..." << std::endl;
-    std::cout << valread << std::endl;
+    std::cout << "Stopped sending data" << std::endl;
+
+	#ifdef SEND_FILE
+		close(buffer_fd);
+	#endif
     return 0;
 }

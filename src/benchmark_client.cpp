@@ -19,16 +19,28 @@ int main(int argv, char** argc) {
     std::chrono::duration<uint64_t, std::nano> diff = end - start;
     result_t r;
     r.nanos = diff.count();
-    std::cout << "Nanos: " << r.nanos << std::endl;
     double seconds = (r.nanos / 1e9);
-    std::cout << "Seconds: " << seconds << std::endl;
-    double BPS = (double(packets) * double(packet_size)) / seconds;
-    std::cout << "Bytes per second: ";
+	uint64_t bytesSent = packets * packet_size;
+	std::cout << "Total data sent: ";
+	if (bytesSent >= 1000000000) {
+        std::cout << (bytesSent / 1000000000) << "GB" << std::endl;
+    } else if (bytesSent >= 1000000) {
+        std::cout << (bytesSent / 1000000) << "MB" << std::endl;
+    } else if (bytesSent >= 1000) {
+		std::cout << (bytesSent / 1000) << "KB" << std::endl;
+	} else {
+        std::cout << bytesSent << "B" << std::endl;
+    }
+    std::cout << "Total duration: " << seconds << " seconds" << std::endl;
+    double BPS = double(bytesSent) * 8 / seconds;
+    std::cout << "Bits per second: ";
     if (BPS >= 1000000000) {
-        std::cout << (BPS / 1000000000) << "GBps" << std::endl;
+        std::cout << (BPS / 1000000000) << "Gbps" << std::endl;
     } else if (BPS >= 1000000) {
-        std::cout << (BPS / 1000000) << "MBps" << std::endl;
-    } else {
-        std::cout << BPS << "Bps" << std::endl;
+        std::cout << (BPS / 1000000) << "Mbps" << std::endl;
+    } else if (BPS >= 1000) {
+		std::cout << (BPS / 1000) << "Kbps" << std::endl;
+	} else {
+        std::cout << BPS << "bps" << std::endl;
     }
 }
