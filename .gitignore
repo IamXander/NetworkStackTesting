@@ -33,3 +33,6 @@
 
 #vscode
 .vscode/*
+
+dpdk/build/*
+dpdk_linux_headers/*

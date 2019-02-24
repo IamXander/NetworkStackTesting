@@ -1,6 +1,6 @@
 CXXFALGS = g++ -O2 -g -pthread -std=c++17 -D CORE_COUNT=8 -I include -I boost
 
-default: benchmark_af_socket_server.out benchmark_af_socket_client.out benchmark_af_socket_send_file_server.out benchmark_af_socket_send_file_client.out benchmark_boost_server.out benchmark_boost_client.out
+default: benchmark_af_socket_server.out benchmark_af_socket_client.out benchmark_af_socket_send_file_server.out benchmark_af_socket_send_file_client.out benchmark_boost_server.out benchmark_boost_client.out benchmark_ring_server.out benchmark_ring_client.out
 
 clean:
 	rm -f *.o
@@ -11,6 +11,9 @@ af_socket_driver.o: include/driver.h src/af_socket/driver.cpp
 
 af_socket_send_file_driver.o: include/driver.h src/af_socket/driver.cpp
 	$(CXXFALGS) src/af_socket/driver.cpp -c -o af_socket_send_file_driver.o -D SEND_FILE
+
+ring_driver.o: include/driver.h src/ring/driver.cpp
+	$(CXXFALGS) src/ring/driver.cpp -c -o ring_driver.o
 
 boost_driver.o: include/driver.h src/boost/driver.cpp
 	$(CXXFALGS) src/boost/driver.cpp -c -o boost_driver.o
@@ -35,6 +38,12 @@ benchmark_af_socket_send_file_server.out: cpu.o benchmark_server.o af_socket_sen
 
 benchmark_af_socket_send_file_client.out: cpu.o benchmark_client.o af_socket_send_file_driver.o
 	$(CXXFALGS) -o benchmark_af_socket_send_file_client.out benchmark_client.o cpu.o af_socket_send_file_driver.o
+
+benchmark_ring_server.out: cpu.o benchmark_server.o ring_driver.o
+	$(CXXFALGS) -o benchmark_ring_server.out benchmark_server.o cpu.o ring_driver.o
+
+benchmark_ring_client.out: cpu.o benchmark_client.o ring_driver.o
+	$(CXXFALGS) -o benchmark_ring_client.out benchmark_client.o cpu.o ring_driver.o
 
 benchmark_boost_server.out: cpu.o benchmark_server.o boost_driver.o
 	$(CXXFALGS) -o benchmark_boost_server.out benchmark_server.o cpu.o boost_driver.o

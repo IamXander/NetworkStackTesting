@@ -118,7 +118,6 @@ int send_data(std::string ip, uint16_t port, uint64_t packets, uint64_t packet_s
 			valread = 0;
 			while (valread < packet_size)
 				valread += sendfile(sock, buffer_fd, NULL, packet_size);
-			std::cout << valread << std::endl;
 			//TODO: this is borked
 		#else
         	valread = send(sock, buffer, packet_size, 0);
