@@ -37,6 +37,7 @@ struct send_data {
 	uint32_t src_ip;
 	uint32_t packet_size;
 	uint64_t data_to_send;
+	int do_copy;
 };
 
 pthread_mutex_t mutex;
@@ -184,6 +185,8 @@ void send_arp(uint16_t portid, struct rte_mempool *mbuf_pool, uint32_t dest_ip, 
 static void lcore_main_flyback(struct send_data* sd) {
 	uint16_t portid = sd->portid;
 	uint32_t ip = sd->src_ip;
+	int do_copy = sd->do_copy;
+	char temp_copy[10000];
 	free(sd);
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
@@ -238,6 +241,10 @@ static void lcore_main_flyback(struct send_data* sd) {
 			ipv4->src_addr = ip;
 			ipv4->hdr_checksum = 0;
 			ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
+
+			if (do_copy) {
+				rte_memcpy(temp_copy, rte_pktmbuf_mtod(buf, uint8_t*), buf->data_len);
+			}
 		}
 		// Send that sucker back!
 		uint16_t nb_tx = 0;
@@ -361,6 +368,7 @@ static int lcore_main_send_latency(void * SD) {
 				}
 			}
 		} while (nb_rx == 0);
+
 		rte_pktmbuf_free(reply_buf);
 		struct timespec end;
 		rc = clock_gettime(CLOCK_REALTIME, &end);
@@ -527,6 +535,7 @@ int main(int argc, char *argv[]) {
 	uint32_t dest_ip = 0;
 	uint32_t packet_size = 0;
 	uint64_t data_to_send = 0;
+	int do_copy = 0;
 	int speed = 0;
 	int latency = 0;
 	int client = 0;
@@ -567,6 +576,9 @@ int main(int argc, char *argv[]) {
 		} else if (!strcmp(argv[i], "--latency")) {
 			latency = 1;
 			assert(!speed);
+		} else if (!strcmp(argv[i], "--do-copy")) {
+			do_copy = 1;
+			assert(latency);
 		}
 	}
 	assert(speed || latency);
@@ -613,6 +625,7 @@ int main(int argc, char *argv[]) {
 				sd->src_ip = ip;
 				sd->packet_size = packet_size;
 				sd->data_to_send = data_to_send;
+				sd->do_copy = do_copy;
 				rte_eal_remote_launch(lcore_main_send_speed, sd, lcore_id);
 			}
 			RTE_LCORE_FOREACH_SLAVE(lcore_id) {
@@ -626,6 +639,7 @@ int main(int argc, char *argv[]) {
 			sd->src_ip = ip;
 			sd->packet_size = packet_size;
 			sd->data_to_send = data_to_send;
+			sd->do_copy = do_copy;
 			lcore_main_send_latency(sd);
 		}
 	} else {
@@ -636,6 +650,7 @@ int main(int argc, char *argv[]) {
 		sd->src_ip = ip;
 		sd->packet_size = packet_size;
 		sd->data_to_send = data_to_send;
+		sd->do_copy = do_copy;
 		lcore_main_flyback(sd);
 	}
 
