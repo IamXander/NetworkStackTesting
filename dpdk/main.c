@@ -1,7 +1,3 @@
-/* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2015 Intel Corporation
- */
-
 #include <stdint.h>
 #include <inttypes.h>
 #include <assert.h>
@@ -30,7 +26,7 @@
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {
-		.max_rx_pkt_len = ETHER_MAX_LEN,
+		.max_rx_pkt_len = 9000, //ETHER_MAX_LEN,
 	},
 };
 
@@ -46,12 +42,6 @@ struct send_data {
 pthread_mutex_t mutex;
 int cores_done = 1;
 
-/* basicfwd.c: Basic DPDK skeleton forwarding example. */
-
-/*
- * Initializes a given port using global settings and with the RX buffers
- * coming from the mbuf_pool passed as a parameter.
- */
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
@@ -162,10 +152,19 @@ void send_arp(uint16_t portid, struct rte_mempool *mbuf_pool, uint32_t dest_ip, 
 	struct rte_mbuf* arp_buf_reply = NULL;
 	do {
 		nb_rx = rte_eth_rx_burst(portid, 0, &arp_buf_reply, 1);
+		if (nb_rx == 1) {
+			uint8_t* data = rte_pktmbuf_mtod(arp_buf_reply, uint8_t*);
+			if (data[0] == 0x1 && data[1] == 0x80) {
+				printf("Got a stupid packet...\n");
+				rte_pktmbuf_free(arp_buf_reply);
+				arp_buf_reply = NULL;
+				nb_rx = 0;
+			}
+		}
 	} while (nb_rx == 0);
 	printf("Got arp response!\n");
 
-	// for (uint16_t i = 0; i < arp_buf_reply->data_len; i++) {
+	// for (uint16_t i = 0; i < rte_pktmbuf_data_len(arp_buf_reply); i++) {
 	// 	uint8_t c = *(((uint8_t*) arp_buf_reply->buf_addr) + i + RTE_PKTMBUF_HEADROOM);
 	// 	printf("%x ", c);
 	// }
@@ -206,6 +205,12 @@ static void lcore_main_flyback(struct send_data* sd) {
 		const uint16_t nb_rx = rte_eth_rx_burst(portid, 0, &buf, 1);
 		if (unlikely(nb_rx == 0))
 			continue;
+		uint8_t* data = rte_pktmbuf_mtod(buf, uint8_t*);
+		if (data[0] == 0x1 && data[1] == 0x80) {
+			printf("Got a stupid packet...\n");
+			rte_pktmbuf_free(buf);
+			continue;
+		}
 		struct ether_hdr* ether = rte_pktmbuf_mtod(buf, struct ether_hdr *);
 		
 		if (ntohs(ether->ether_type) == ETHER_TYPE_ARP) { //ARP - we gotta arp back
@@ -340,8 +345,21 @@ static int lcore_main_send_latency(void * SD) {
 
 		struct rte_mbuf* reply_buf = NULL;
 		uint16_t nb_rx = 0;
+		int stupidPacket = 0;
 		do {
 			nb_rx = rte_eth_rx_burst(portid, 0, &reply_buf, 1);
+			if (nb_rx == 1) {
+				uint8_t* data = rte_pktmbuf_mtod(reply_buf, uint8_t*);
+				if (data[0] == 0x1 && data[1] == 0x80) {
+					printf("Got a stupid packet...\n");
+					rte_pktmbuf_free(reply_buf);
+					reply_buf = NULL;
+					stupidPacket = 1;
+					nb_rx = 0;
+					bytesSent -= packet_size;
+					continue;
+				}
+			}
 		} while (nb_rx == 0);
 		rte_pktmbuf_free(reply_buf);
 		struct timespec end;
@@ -349,7 +367,10 @@ static int lcore_main_send_latency(void * SD) {
 		if (rc != 0) {
 			printf("%s\n", strerror(errno));
 		}
-		avg_time = ((avg_time * packets_sent) + ((end.tv_nsec - start.tv_nsec) + ((end.tv_sec - start.tv_sec) * 1000000000.0))) / (++packets_sent);
+		if (!stupidPacket) {
+			double nanos = ((end.tv_nsec - start.tv_nsec) + ((end.tv_sec - start.tv_sec) * 1000000000.0));
+			avg_time = ((avg_time * packets_sent) + nanos) / (++packets_sent);
+		}
 		// print_diff("RT TIME:", &start, &end);
 	}
 	printf("Average time: %f\n", avg_time);
@@ -424,7 +445,8 @@ static int lcore_main_send_speed(void * SD) {
 	if (rc != 0) {
 		printf("%s\n", strerror(errno));
 	}
-
+	unsigned long long cyclesOnSend = 0;
+	unsigned long long cyclesStart = __rdtsc();
 	while (bytesSent < data_to_send) {
 		// printf("trying to send...\n");
 		// struct timespec begin;
@@ -456,10 +478,13 @@ static int lcore_main_send_speed(void * SD) {
 		// clock_gettime(CLOCK_REALTIME, &post_memcpy);
 
 		// pthread_mutex_lock(&mutex);
+		unsigned long long cyclesStartBurst = __rdtsc();
 		uint16_t nb_tx = 0;
 		do {
 			nb_tx += rte_eth_tx_burst(portid, rte_lcore_id(), bufs + nb_tx, BURST_SIZE - nb_tx);
 		} while (unlikely(nb_tx < BURST_SIZE));
+		unsigned long long cyclesEndBurst = __rdtsc();
+		cyclesOnSend += cyclesEndBurst - cyclesStartBurst;
 
 		// struct timespec end;
 		// clock_gettime(CLOCK_REALTIME, &end);
@@ -467,6 +492,7 @@ static int lcore_main_send_speed(void * SD) {
 		// pthread_mutex_unlock(&mutex);
 		packets_sent += BURST_SIZE;
 	}
+	unsigned long long cyclesEnd = __rdtsc();
 	struct timespec end;
 	rc = clock_gettime(CLOCK_REALTIME, &end);
 	if (rc != 0) {
@@ -478,9 +504,14 @@ static int lcore_main_send_speed(void * SD) {
 	double bytesSentGbps = bytesSent / 1000000000.0;
 	double bps = (bytesSent * 8.0) / seconds;
 	double gbps = bps / 1000000000.0;
+
+	unsigned long long totalCycles = cyclesEnd - cyclesStart;
+	double cpuUsage = (double)cyclesOnSend / (double)totalCycles;
+	//cyclesOnSend
 	printf("seconds: %f, data sent (GBs): %f\nbps: %f, gbps: %f\n", seconds, bytesSentGbps, bps, gbps);
 	printf("packets sent: %d\n", packets_sent);
 	printf("packets size: %d\n", packet_size);
+	printf("total cycles: %llu, cycles sending: %llu, sending/total: %f\n", totalCycles, cyclesOnSend, cpuUsage);
 	return 0;
 }
 
@@ -550,12 +581,12 @@ int main(int argc, char *argv[]) {
 
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
-	if (nb_ports < 2 || (nb_ports & 1))
-		rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
+	// if (nb_ports < 2 || (nb_ports & 1))
+	// 	rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
-		MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+		MBUF_CACHE_SIZE, 0, 10000 /*RTE_MBUF_DEFAULT_BUF_SIZE*/, rte_socket_id());
 
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
