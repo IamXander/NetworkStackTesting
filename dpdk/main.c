@@ -38,16 +38,16 @@ struct send_data {
 	uint32_t packet_size;
 	uint64_t data_to_send;
 	int do_copy;
+	int tx_rings;
 };
 
 pthread_mutex_t mutex;
 int cores_done = 1;
+int core_count = 0;
 
-static inline int
-port_init(uint16_t port, struct rte_mempool *mbuf_pool)
-{
+static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool, uint16_t tx_rings) {
 	struct rte_eth_conf port_conf = port_conf_default;
-	const uint16_t rx_rings = 1, tx_rings = rte_lcore_count();
+	const uint16_t rx_rings = 1;
 	uint16_t nb_rxd = RX_RING_SIZE;
 	uint16_t nb_txd = TX_RING_SIZE;
 	int retval;
@@ -402,6 +402,10 @@ static int lcore_main_send_speed(void * SD) {
 	if (packet_size < sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr)) packet_size = sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr);
 	uint32_t data_size = packet_size - (sizeof(struct ether_hdr) + sizeof(struct ipv4_hdr));
 	uint64_t data_to_send = sd->data_to_send;
+	int tx_rings = sd->tx_rings;
+	int core = core_count++;
+	int core_tx_ring_offset = core * tx_rings;
+	int current_queue = 0;
 	free(sd);
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
@@ -414,8 +418,8 @@ static int lcore_main_send_speed(void * SD) {
 				"polling thread.\n\tPerformance will "
 				"not be optimal.\n", portid);
 
-	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
-			rte_lcore_id());
+	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
+	printf("Core %u = Core_count %d\n", rte_lcore_id(), core);
 
 	struct ether_hdr ether_with_mac;
 	ether_with_mac.ether_type = htons(ETHER_TYPE_IPv4);
@@ -480,6 +484,7 @@ static int lcore_main_send_speed(void * SD) {
 			//ipv4
 			rte_memcpy(ipv4, &ipv4_default, sizeof(ipv4_default));
 		}
+		current_queue = (current_queue + 1) % tx_rings;
 		// struct timespec post_memcpy;
 		// clock_gettime(CLOCK_REALTIME, &post_memcpy);
 		// print_diff("Memcpy Time", &post_alloc, &post_memcpy);
@@ -489,7 +494,7 @@ static int lcore_main_send_speed(void * SD) {
 		unsigned long long cyclesStartBurst = __rdtsc();
 		uint16_t nb_tx = 0;
 		do {
-			nb_tx += rte_eth_tx_burst(portid, rte_lcore_id(), bufs + nb_tx, BURST_SIZE - nb_tx);
+			nb_tx += rte_eth_tx_burst(portid, core_tx_ring_offset + current_queue, bufs + nb_tx, BURST_SIZE - nb_tx);
 		} while (unlikely(nb_tx < BURST_SIZE));
 		unsigned long long cyclesEndBurst = __rdtsc();
 		cyclesOnSend += cyclesEndBurst - cyclesStartBurst;
@@ -516,10 +521,13 @@ static int lcore_main_send_speed(void * SD) {
 	unsigned long long totalCycles = cyclesEnd - cyclesStart;
 	double cpuUsage = (double)cyclesOnSend / (double)totalCycles;
 	//cyclesOnSend
+	pthread_mutex_lock(&mutex);
 	printf("seconds: %f, data sent (GBs): %f\nbps: %f, gbps: %f\n", seconds, bytesSentGbps, bps, gbps);
 	printf("packets sent: %d\n", packets_sent);
 	printf("packets size: %d\n", packet_size);
+	printf("core: %d queues: %d\n", rte_lcore_id(), tx_rings);
 	printf("total cycles: %llu, cycles sending: %llu, sending/total: %f\n", totalCycles, cyclesOnSend, cpuUsage);
+	pthread_mutex_unlock(&mutex);
 	return 0;
 }
 
@@ -535,6 +543,7 @@ int main(int argc, char *argv[]) {
 	uint32_t dest_ip = 0;
 	uint32_t packet_size = 0;
 	uint64_t data_to_send = 0;
+	uint16_t tx_rings = 1;
 	int do_copy = 0;
 	int speed = 0;
 	int latency = 0;
@@ -579,6 +588,11 @@ int main(int argc, char *argv[]) {
 		} else if (!strcmp(argv[i], "--do-copy")) {
 			do_copy = 1;
 			assert(latency);
+		} else if (!strcmp(argv[i], "--tx-rings")) {
+			++i;
+			assert(i < argc);
+			tx_rings = atoi(argv[i]);
+			assert(speed);
 		}
 	}
 	assert(speed || latency);
@@ -605,12 +619,9 @@ int main(int argc, char *argv[]) {
 
 	/* Initialize all ports. */
 	// RTE_ETH_FOREACH_DEV(portid)
-		if (port_init(portid, mbuf_pool) != 0)
+		if (port_init(portid, mbuf_pool, tx_rings * (rte_lcore_count() - 1)) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
 					portid);
-
-	if (rte_lcore_count() > 1)
-		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
 	pthread_mutex_init(&mutex, NULL);
 
@@ -626,6 +637,7 @@ int main(int argc, char *argv[]) {
 				sd->packet_size = packet_size;
 				sd->data_to_send = data_to_send;
 				sd->do_copy = do_copy;
+				sd->tx_rings = tx_rings;
 				rte_eal_remote_launch(lcore_main_send_speed, sd, lcore_id);
 			}
 			RTE_LCORE_FOREACH_SLAVE(lcore_id) {
@@ -640,6 +652,7 @@ int main(int argc, char *argv[]) {
 			sd->packet_size = packet_size;
 			sd->data_to_send = data_to_send;
 			sd->do_copy = do_copy;
+			sd->tx_rings = tx_rings;
 			lcore_main_send_latency(sd);
 		}
 	} else {
@@ -651,6 +664,7 @@ int main(int argc, char *argv[]) {
 		sd->packet_size = packet_size;
 		sd->data_to_send = data_to_send;
 		sd->do_copy = do_copy;
+		sd->tx_rings = tx_rings;
 		lcore_main_flyback(sd);
 	}
 
