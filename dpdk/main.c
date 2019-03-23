@@ -178,10 +178,6 @@ void send_arp(uint16_t portid, struct rte_mempool *mbuf_pool, uint32_t dest_ip, 
 	memcpy(mac_addr, &ether->s_addr, sizeof(ether->s_addr)); //We got the MAC to send data to
 }
 
-/*
- * The lcore main. This is the main thread that does the work, reading from
- * an input port and writing to an output port.
- */
 static void lcore_main_flyback(struct send_data* sd) {
 	uint16_t portid = sd->portid;
 	uint32_t ip = sd->src_ip;
@@ -192,15 +188,11 @@ static void lcore_main_flyback(struct send_data* sd) {
 	 * Check that the port is on the same NUMA node as the polling thread
 	 * for best performance.
 	 */
-	if (rte_eth_dev_socket_id(portid) > 0 &&
-			rte_eth_dev_socket_id(portid) !=
-					(int)rte_socket_id())
-		printf("WARNING, port %u is on remote NUMA node to "
-				"polling thread.\n\tPerformance will "
-				"not be optimal.\n", portid);
+	if (rte_eth_dev_socket_id(portid) > 0 && rte_eth_dev_socket_id(portid) != (int)rte_socket_id()) {
+		printf("WARNING, port %u is on remote NUMA node to polling thread.\n\tPerformance will not be optimal.\n", portid);
+	}
 
-	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
-			rte_lcore_id());
+	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
 
 	/* Run until the application is quit or killed. */
 	while (1) {
@@ -261,10 +253,6 @@ void print_diff(const char* title, struct timespec* start, struct timespec* end)
 	printf("%s: seconds: %f, nanos: %ld\n", title, seconds, nanos);
 }
 
-/*
- * The lcore main. This is the main thread that does the work, reading from
- * an input port and writing to an output port.
- */
 static int lcore_main_send_latency(void * SD) {
 	pthread_mutex_lock(&mutex);
 	struct send_data* sd = (struct send_data*) SD;
@@ -280,19 +268,16 @@ static int lcore_main_send_latency(void * SD) {
 	double avg_time = 0;
 	uint64_t packets_sent = 0;
 	free(sd);
+	
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
 	 * for best performance.
 	 */
-	if (rte_eth_dev_socket_id(portid) > 0 &&
-			rte_eth_dev_socket_id(portid) !=
-					(int)rte_socket_id())
-		printf("WARNING, port %u is on remote NUMA node to "
-				"polling thread.\n\tPerformance will "
-				"not be optimal.\n", portid);
+	if (rte_eth_dev_socket_id(portid) > 0 && rte_eth_dev_socket_id(portid) != (int)rte_socket_id()) {
+		printf("WARNING, port %u is on remote NUMA node to polling thread.\n\tPerformance will not be optimal.\n", portid);
+	}
 
-	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n",
-			rte_lcore_id());
+	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
 
 	struct ether_hdr ether_with_mac;
 	ether_with_mac.ether_type = htons(ETHER_TYPE_IPv4);
@@ -387,10 +372,6 @@ static int lcore_main_send_latency(void * SD) {
 	return 0;
 }
 
-/*
- * The lcore main. This is the main thread that does the work, reading from
- * an input port and writing to an output port.
- */
 static int lcore_main_send_speed(void * SD) {
 	pthread_mutex_lock(&mutex);
 	struct send_data* sd = (struct send_data*) SD;
@@ -411,12 +392,8 @@ static int lcore_main_send_speed(void * SD) {
 	 * Check that the port is on the same NUMA node as the polling thread
 	 * for best performance.
 	 */
-	if (rte_eth_dev_socket_id(portid) > 0 &&
-			rte_eth_dev_socket_id(portid) !=
-					(int)rte_socket_id())
-		printf("WARNING, port %u is on remote NUMA node to "
-				"polling thread.\n\tPerformance will "
-				"not be optimal.\n", portid);
+	if (rte_eth_dev_socket_id(portid) > 0 && rte_eth_dev_socket_id(portid) != (int)rte_socket_id())
+		printf("WARNING, port %u is on remote NUMA node to polling thread.\n\tPerformance will not be optimal.\n", portid);
 
 	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
 	printf("Core %u = Core_count %d\n", rte_lcore_id(), core);
@@ -531,10 +508,72 @@ static int lcore_main_send_speed(void * SD) {
 	return 0;
 }
 
-/*
- * The main function, which does initialization and calls the per-lcore
- * functions.
- */
+static void lcore_main_recv_speed(struct send_data* sd) {
+	uint16_t portid = sd->portid;
+	uint32_t ip = sd->src_ip;
+	int do_copy = sd->do_copy;
+	char temp_copy[10000];
+	uint64_t packetsRecv = 0;
+	uint64_t packets_to_recv = ceil(sd->data_to_send / (double) (sd->packet_size * BURST_SIZE)) * BURST_SIZE;
+	free(sd);
+	/*
+	 * Check that the port is on the same NUMA node as the polling thread
+	 * for best performance.
+	 */
+	if (rte_eth_dev_socket_id(portid) > 0 && rte_eth_dev_socket_id(portid) != (int)rte_socket_id()) {
+		printf("WARNING, port %u is on remote NUMA node to polling thread.\n\tPerformance will not be optimal.\n", portid);
+	}
+
+	printf("\nCore %u forwarding packets. [Ctrl+C to quit]\n", rte_lcore_id());
+
+	/* Run until the application is quit or killed. */
+	while (packetsRecv < packets_to_recv) {
+		struct rte_mbuf *buffer_all_packets[BURST_SIZE];
+		const uint16_t nb_rx = rte_eth_rx_burst(portid, 0, buffer_all_packets, BURST_SIZE);
+		if (unlikely(nb_rx == 0)) {
+			continue;
+		}
+		for (uint16_t i = 0; i < nb_rx; i++) {
+			struct rte_mbuf *buf = buffer_all_packets[i];
+			uint8_t* data = rte_pktmbuf_mtod(buf, uint8_t*);
+			if (data[0] == 0x1 && data[1] == 0x80) {
+				// printf("Got a stupid packet...\n");
+				rte_pktmbuf_free(buf);
+				continue;
+			}
+			struct ether_hdr* ether = rte_pktmbuf_mtod(buf, struct ether_hdr *);
+			
+			if (ntohs(ether->ether_type) == ETHER_TYPE_ARP) { //ARP - we gotta arp back
+				printf("We got an arp!\n");
+				struct arp_hdr* arp = rte_pktmbuf_mtod_offset(buf, struct arp_hdr *, sizeof(struct ether_hdr));
+
+				//Ethernet good to send out
+				memcpy(&ether->d_addr, &ether->s_addr, sizeof(ether->s_addr));
+				rte_eth_macaddr_get(portid, &ether->s_addr);
+
+				arp->arp_op = htons(ARP_OP_REPLY);
+				memcpy(&arp->arp_data.arp_tha, &arp->arp_data.arp_sha, sizeof(arp->arp_data.arp_tha));
+				memcpy(&arp->arp_data.arp_tip, &arp->arp_data.arp_tip, sizeof(arp->arp_data.arp_tip));
+				rte_eth_macaddr_get(portid, &arp->arp_data.arp_sha);
+				arp->arp_data.arp_sip = ip;
+				// Send that sucker back!
+				uint16_t nb_tx = 0;
+				do {
+					nb_tx += rte_eth_tx_burst(portid, 0, &buf, 1);
+				} while (unlikely(nb_tx < 1));
+			} else if (ntohs(ether->ether_type) == ETHER_TYPE_IPv4) {
+				++packetsRecv;
+				if (do_copy) {
+					rte_memcpy(temp_copy, rte_pktmbuf_mtod(buf, uint8_t*), buf->data_len);
+				}
+				rte_pktmbuf_free(buf);
+			}
+		}
+	}
+
+	printf("Packets Recv: %llu\n", packetsRecv);
+}
+
 int main(int argc, char *argv[]) {
 	struct rte_mempool *mbuf_pool;
 	unsigned nb_ports;
@@ -619,9 +658,11 @@ int main(int argc, char *argv[]) {
 
 	/* Initialize all ports. */
 	// RTE_ETH_FOREACH_DEV(portid)
-		if (port_init(portid, mbuf_pool, tx_rings * (rte_lcore_count() - 1)) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
-					portid);
+	uint16_t tx_rings_min = tx_rings * (rte_lcore_count() - 1);
+	if (tx_rings_min == 0) tx_rings_min = 1;
+	if (port_init(portid, mbuf_pool, tx_rings_min) != 0) {
+		rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",portid);
+	}	
 
 	pthread_mutex_init(&mutex, NULL);
 
@@ -656,16 +697,29 @@ int main(int argc, char *argv[]) {
 			lcore_main_send_latency(sd);
 		}
 	} else {
-		struct send_data* sd = malloc(sizeof(struct send_data));
-		sd->portid = portid;
-		sd->mbuf_pool = mbuf_pool;
-		sd->dest_ip = dest_ip;
-		sd->src_ip = ip;
-		sd->packet_size = packet_size;
-		sd->data_to_send = data_to_send;
-		sd->do_copy = do_copy;
-		sd->tx_rings = tx_rings;
-		lcore_main_flyback(sd);
+		if (speed) {
+			struct send_data* sd = malloc(sizeof(struct send_data));
+			sd->portid = portid;
+			sd->mbuf_pool = mbuf_pool;
+			sd->dest_ip = dest_ip;
+			sd->src_ip = ip;
+			sd->packet_size = packet_size;
+			sd->data_to_send = data_to_send;
+			sd->do_copy = do_copy;
+			sd->tx_rings = tx_rings;
+			lcore_main_recv_speed(sd);
+		} else {
+			struct send_data* sd = malloc(sizeof(struct send_data));
+			sd->portid = portid;
+			sd->mbuf_pool = mbuf_pool;
+			sd->dest_ip = dest_ip;
+			sd->src_ip = ip;
+			sd->packet_size = packet_size;
+			sd->data_to_send = data_to_send;
+			sd->do_copy = do_copy;
+			sd->tx_rings = tx_rings;
+			lcore_main_flyback(sd);
+		}
 	}
 
 	pthread_mutex_destroy(&mutex);

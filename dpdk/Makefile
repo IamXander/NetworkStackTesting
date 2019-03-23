@@ -1,7 +1,7 @@
 include $(RTE_SDK)/mk/rte.vars.mk
 
 # binary name
-APP = helloworld
+APP = NetstackTesting
 
 # all source are stored in SRCS-y
 SRCS-y := main.c
