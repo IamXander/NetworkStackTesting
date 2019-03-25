@@ -36,3 +36,4 @@
 
 dpdk/build/*
 dpdk_linux_headers/*
+dpdk-multiFlow/build/*
