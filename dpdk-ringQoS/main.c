@@ -14,6 +14,7 @@
 #include <rte_arp.h>
 #include <rte_ip.h>
 #include <rte_sched.h>
+#include <rte_meter.h>
 
 #define MBUF_CACHE_SIZE 250
 
@@ -26,6 +27,11 @@ struct generatorConfig_t {
 	int64_t burstSize;
 	int64_t packetsToDequeue; //Max packets to try and dequeue per operation on QoS thread
 	struct rte_ring * ring;
+
+	uint32_t subport;
+	uint32_t pipe;
+	uint32_t traffic_class;
+	uint32_t queue;
 };
 
 struct rte_mempool *mbuf_pool;
@@ -50,6 +56,7 @@ static int lcore_main_generate_packets(void * gc) {
 			struct rte_mbuf * buf = bufs[i];
 			buf->data_len = generatorConfig->packetSize;
 			buf->pkt_len = generatorConfig->packetSize;
+			rte_sched_port_pkt_write(scheduler, buf, generatorConfig->subport, generatorConfig->pipe, generatorConfig->traffic_class, generatorConfig->queue, e_RTE_METER_GREEN);
 		}
 		packetsSent += generatorConfig->burstSize;
 
@@ -75,6 +82,7 @@ static void lcore_main_QOS(struct generatorConfig_t* generatorConfigs, int64_t n
 	int64_t packetsRecved[MAX_GENERATORS];
 	memset(packetsRecved, 0, sizeof(int64_t) * MAX_GENERATORS);
 	int morePackets = 1;
+	int64_t totalDeq = 0;
 	while (morePackets) {
 		morePackets = 0;
 		for (int64_t i = 0; i < numGenerators; ++i) {
@@ -92,10 +100,29 @@ static void lcore_main_QOS(struct generatorConfig_t* generatorConfigs, int64_t n
 					rte_pktmbuf_free(bufs[j]);
 				}
 			} else {
-
+				printf("QU\n");
+				int numEnqueue = 0;
+				// do {
+				// 	printf("QU W/ %ld and %ld\n", numEnqueue, generatorConfigs[i].packetsToDequeue);
+					numEnqueue += rte_sched_port_enqueue(scheduler, bufs + numEnqueue, generatorConfigs[i].packetsToDequeue - numEnqueue);
+				// } while (numEnqueue < generatorConfigs[i].packetsToDequeue);
+				printf("QU\n");
 			}
 		}
+
+		if (numQoSDequeue != -1) {
+			printf("DEQ\n");
+			struct rte_mbuf *bufs[numQoSDequeue];
+			int numDequeue = rte_sched_port_dequeue(scheduler, bufs, numQoSDequeue);
+			printf("DEQ2\n");
+			for (int j = 0; j < numDequeue; ++j) {
+				rte_pktmbuf_free(bufs[j]);
+			}
+			totalDeq += numDequeue;
+		}
 	}
+
+	printf("Total packets dequeued: %ld\n", totalDeq);
 }
 
 int main(int argc, char *argv[]) {
@@ -116,13 +143,19 @@ int main(int argc, char *argv[]) {
 	strcpy(ringName, "ring");
 	for (int i = 0; i < argc; i++) {
 		if (!strcmp(argv[i], "-g")) {
-			assert(i + 5 < argc);
+			assert(i + 9 < argc);
 			assert(numGenerators + 1 < MAX_GENERATORS);
 			generatorConfigs[numGenerators].packetsToGenerate = atol(argv[++i]);
 			generatorConfigs[numGenerators].packetSize = atol(argv[++i]);
 			generatorConfigs[numGenerators].queueSize = atol(argv[++i]);
 			generatorConfigs[numGenerators].burstSize = atol(argv[++i]);
 			generatorConfigs[numGenerators].packetsToDequeue = atol(argv[++i]);
+
+			generatorConfigs[numGenerators].subport = atol(argv[++i]);
+			generatorConfigs[numGenerators].pipe = atol(argv[++i]);
+			generatorConfigs[numGenerators].traffic_class = atol(argv[++i]);
+			generatorConfigs[numGenerators].queue = atol(argv[++i]);
+
 			sprintf(ringName + 4, "%d", i);
 			generatorConfigs[numGenerators].ring =
 				rte_ring_create(ringName, generatorConfigs[numGenerators].queueSize, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ); //Single producer, single consumer
@@ -158,32 +191,47 @@ int main(int argc, char *argv[]) {
 
 	if (mbuf_pool == NULL) rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\nError: %s\n", rte_strerror(rte_errno));
 
-	// static struct rte_sched_pipe_params pipe_profiles[RTE_SCHED_PIPE_PROFILES_PER_PORT] = {
-	// 	{ /* Profile #0 */
-	// 		.tb_rate = 305175,
-	// 		.tb_size = 1000000,
-	// 		.tc_rate = {305175, 305175, 305175, 305175},
-	// 		.tc_period = 40,
-	// 		.wrr_weights = {1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1},
-	// 	},
-	// };
-	// struct rte_sched_port_params port_params = {
-	// 	.name = "port_scheduler_0",
-	// 	.socket = rte_socket_id(),
-	// 	.rate = 0, /* computed */
-	// 	.mtu = 6 + 6 + 4 + 4 + 2 + 1500,
-	// 	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
-	// 	.n_subports_per_port = 1,
-	// 	.n_pipes_per_subport = 4096,
-	// 	.qsize = {64, 64, 64, 64},
-	// 	.pipe_profiles = pipe_profiles,
-	// 	.n_pipe_profiles = sizeof(pipe_profiles) / sizeof(struct rte_sched_pipe_params),
-	// };
 
-	// scheduler = rte_sched_port_config(&port_params);
-	// if (scheduler == NULL){
-	// 	rte_exit(EXIT_FAILURE, "Unable to config sched port\n");
-	// }
+	if (numQoSDequeue != -1) {
+		static struct rte_sched_pipe_params pipe_profiles[1] = {
+			{ /* Profile #0 */
+				.tb_rate = 305175, //305175
+				.tb_size = 1000000,
+				.tc_rate = {305175, 305175, 305175, 305175}, //305175
+				.tc_period = 40,
+				.wrr_weights = {1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1},
+			},
+		};
+		struct rte_sched_port_params port_params = {
+			.name = "port_scheduler_0",
+			.socket = rte_socket_id(),
+			.rate = 1000 * 1000 * 1000, //1Gbps
+			.mtu = 6 + 6 + 4 + 4 + 2 + 1500,
+			.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
+			.n_subports_per_port = 1,
+			.n_pipes_per_subport = 4096,
+			.qsize = {64, 64, 64, 64},
+			.pipe_profiles = pipe_profiles,
+			.n_pipe_profiles = sizeof(pipe_profiles) / sizeof(struct rte_sched_pipe_params),
+		};
+
+		static struct rte_sched_subport_params subport_params = {
+			.tb_rate = 305175, //1250000000,
+			.tb_size = 1000000,
+			.tc_rate = {305175, 305175, 305175, 305175}, //{1250000000, 1250000000, 1250000000, 1250000000},
+			.tc_period = 10,
+		};
+
+		scheduler = rte_sched_port_config(&port_params);
+		if (scheduler == NULL){
+			rte_exit(EXIT_FAILURE, "Unable to config sched port\nError: %s\n", rte_strerror(rte_errno));
+		}
+
+		int err = rte_sched_subport_config(scheduler, 0, &subport_params);
+		if (err != 0) {
+			rte_exit(EXIT_FAILURE, "Unable to config sched subport\nError: %d\n", err);
+		}
+	}
 
 	int coreNum = 0;
 	int lcore_id;
