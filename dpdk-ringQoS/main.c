@@ -1,4 +1,6 @@
 #include "../dpdk-common/dpdk_common.h"
+#include "../dpdk-common/ll.h"
+
 #include <inttypes.h>
 #include <stdlib.h>
 
@@ -78,11 +80,22 @@ static int lcore_main_generate_packets(void * gc) {
 	return 0;
 }
 
-static void lcore_main_QOS(struct generatorConfig_t* generatorConfigs, int64_t numGenerators, int64_t numQoSDequeue) {
+static void lcore_main_QOS(struct generatorConfig_t* generatorConfigs, int64_t numGenerators, int64_t numQoSDequeue, uint64_t sleeptime) {
 	int64_t packetsRecved[MAX_GENERATORS];
+	int64_t packetsDropped[MAX_GENERATORS];
+	memset(packetsDropped, 0, sizeof(packetsDropped));
 	memset(packetsRecved, 0, sizeof(int64_t) * MAX_GENERATORS);
 	int morePackets = 1;
 	int64_t totalDeq = 0;
+	int64_t totalPackets = 0;
+	for (int64_t i = 0; i < numGenerators; ++i) {
+		totalPackets += generatorConfigs[i].packetsToGenerate;
+	}
+	struct timespec start;
+	int rc = clock_gettime(CLOCK_REALTIME, &start);
+	if (rc != 0) {
+		printf("%s\n", strerror(errno));
+	}
 	while (morePackets) {
 		morePackets = 0;
 		for (int64_t i = 0; i < numGenerators; ++i) {
@@ -100,29 +113,43 @@ static void lcore_main_QOS(struct generatorConfig_t* generatorConfigs, int64_t n
 					rte_pktmbuf_free(bufs[j]);
 				}
 			} else {
-				printf("QU\n");
 				int numEnqueue = 0;
 				// do {
-				// 	printf("QU W/ %ld and %ld\n", numEnqueue, generatorConfigs[i].packetsToDequeue);
-					numEnqueue += rte_sched_port_enqueue(scheduler, bufs + numEnqueue, generatorConfigs[i].packetsToDequeue - numEnqueue);
+				numEnqueue += rte_sched_port_enqueue(scheduler, bufs, generatorConfigs[i].packetsToDequeue);
+				packetsDropped[i] += generatorConfigs[i].packetsToDequeue - numEnqueue;
+				if (sleeptime > 0) nanosleep((const struct timespec[]){{0, sleeptime}}, NULL);
 				// } while (numEnqueue < generatorConfigs[i].packetsToDequeue);
-				printf("QU\n");
 			}
 		}
 
 		if (numQoSDequeue != -1) {
-			printf("DEQ\n");
 			struct rte_mbuf *bufs[numQoSDequeue];
 			int numDequeue = rte_sched_port_dequeue(scheduler, bufs, numQoSDequeue);
-			printf("DEQ2\n");
 			for (int j = 0; j < numDequeue; ++j) {
 				rte_pktmbuf_free(bufs[j]);
 			}
 			totalDeq += numDequeue;
 		}
 	}
+	struct timespec end;
+	rc = clock_gettime(CLOCK_REALTIME, &end);
+	if (rc != 0) {
+		printf("%s\n", strerror(errno));
+	}
+	time_t sec = end.tv_sec - start.tv_sec;
+	long nanos = end.tv_nsec - start.tv_nsec;
+	double seconds = ((double) sec) + ((double)nanos / 1000000000.0);
 
+	printf("@@@DATA@@@\n"); //Marker for python!
+	int64_t totalPacketsDropped = 0;
+	for (int i = 0; i < numGenerators; i++) {
+		totalPacketsDropped += packetsDropped[i];
+		printf("Core %d: dropped/survived/total - %ld/%ld/%ld\n", i, packetsDropped[i], generatorConfigs[i].packetsToGenerate - packetsDropped[i], generatorConfigs[i].packetsToGenerate);
+	}
 	printf("Total packets dequeued: %ld\n", totalDeq);
+	printf("Total packets dropped on enqueue: %ld\n", totalPacketsDropped);
+	printf("Total packets left on queue: %ld\n", totalPackets - (totalDeq + totalPacketsDropped));
+	printf("Duration (seconds): %f\n", seconds);
 }
 
 int main(int argc, char *argv[]) {
@@ -141,9 +168,20 @@ int main(int argc, char *argv[]) {
 	struct generatorConfig_t generatorConfigs[MAX_GENERATORS];
 	char ringName[20];
 	strcpy(ringName, "ring");
+
+	uint32_t rate;
+	uint32_t mtu;
+	uint32_t n_subports_per_port;
+	uint32_t n_pipes_per_subport;
+	uint16_t qsize[RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE];
+	int pipeProfiles = 0;
+	uint64_t sleeptime;
+
+	struct ll* subports = new_ll();
+	struct ll* pipeProfs = new_ll();
 	for (int i = 0; i < argc; i++) {
 		if (!strcmp(argv[i], "-g")) {
-			assert(i + 9 < argc);
+			assert(i + 10 < argc);
 			assert(numGenerators + 1 < MAX_GENERATORS);
 			generatorConfigs[numGenerators].packetsToGenerate = atol(argv[++i]);
 			generatorConfigs[numGenerators].packetSize = atol(argv[++i]);
@@ -156,7 +194,7 @@ int main(int argc, char *argv[]) {
 			generatorConfigs[numGenerators].traffic_class = atol(argv[++i]);
 			generatorConfigs[numGenerators].queue = atol(argv[++i]);
 
-			sprintf(ringName + 4, "%d", i);
+			sprintf(ringName + 4, "%d", numGenerators);
 			generatorConfigs[numGenerators].ring =
 				rte_ring_create(ringName, generatorConfigs[numGenerators].queueSize, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ); //Single producer, single consumer
 			if (generatorConfigs[numGenerators].ring == NULL)
@@ -168,6 +206,43 @@ int main(int argc, char *argv[]) {
 			++i;
 			assert(i < argc);
 			numQoSDequeue = atol(argv[i]);
+		} else if (!strcmp(argv[i], "-st")) {
+			++i;
+			assert(i < argc);
+			sleeptime = atol(argv[i]);
+		} else if (!strcmp(argv[i], "-c")) {
+			assert(i + 4 + RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE < argc);
+			rate = atol(argv[++i]);
+			mtu = atol(argv[++i]);
+			n_subports_per_port = atol(argv[++i]);
+			n_pipes_per_subport = atol(argv[++i]);
+			for (int j = 0; j < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; j++) {
+				qsize[j] = atol(argv[++i]);
+			}
+		} else if (!strcmp(argv[i], "-s")) {
+			struct rte_sched_subport_params* subport_params = malloc(sizeof(struct rte_sched_subport_params));
+			assert(i + 3 + 4 < argc);
+			subport_params->tb_rate = atol(argv[++i]);
+			subport_params->tb_size = atol(argv[++i]);
+			for (int j = 0; j < 4; j++) {
+				subport_params->tc_rate[j] = atol(argv[++i]);
+			}
+			subport_params->tc_period = atol(argv[++i]);
+			add_ll(subports, subport_params);
+		} else if (!strcmp(argv[i], "-p")) {
+			struct rte_sched_pipe_params* pipe_params = malloc(sizeof(struct rte_sched_pipe_params));
+			assert(i + 3 + 4 + 16 < argc);
+			pipe_params->tb_rate = atol(argv[++i]);
+			pipe_params->tb_size = atol(argv[++i]);
+			for (int j = 0; j < 4; j++) {
+				pipe_params->tc_rate[j] = atol(argv[++i]);
+			}
+			pipe_params->tc_period = atol(argv[++i]);
+			for (int j = 0; j < 16; j++) {
+				pipe_params->wrr_weights[j] = atol(argv[++i]);
+			}
+			pipeProfiles++;
+			add_ll(pipeProfs, pipe_params);
 		}
 	}
 
@@ -193,43 +268,40 @@ int main(int argc, char *argv[]) {
 
 
 	if (numQoSDequeue != -1) {
-		static struct rte_sched_pipe_params pipe_profiles[1] = {
-			{ /* Profile #0 */
-				.tb_rate = 305175, //305175
-				.tb_size = 1000000,
-				.tc_rate = {305175, 305175, 305175, 305175}, //305175
-				.tc_period = 40,
-				.wrr_weights = {1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1,  1, 1, 1, 1},
-			},
-		};
+		struct rte_sched_pipe_params pipe_profiles[pipeProfiles];
+		for (int i = 0; i < pipeProfiles; i++) {
+			struct rte_sched_pipe_params* pipe_params = pop_ll(&pipeProfs);
+			assert(pipe_params);
+			memcpy(&pipe_profiles[i], pipe_params, sizeof(struct rte_sched_pipe_params));
+			free(pipe_params);
+		}
 		struct rte_sched_port_params port_params = {
 			.name = "port_scheduler_0",
 			.socket = rte_socket_id(),
-			.rate = 1000 * 1000 * 1000, //1Gbps
-			.mtu = 6 + 6 + 4 + 4 + 2 + 1500,
+			.rate = rate, //1Gbps
+			.mtu = mtu,
 			.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
-			.n_subports_per_port = 1,
-			.n_pipes_per_subport = 4096,
-			.qsize = {64, 64, 64, 64},
+			.n_subports_per_port = n_subports_per_port,
+			.n_pipes_per_subport = n_pipes_per_subport,
 			.pipe_profiles = pipe_profiles,
-			.n_pipe_profiles = sizeof(pipe_profiles) / sizeof(struct rte_sched_pipe_params),
+			.n_pipe_profiles = pipeProfiles,
 		};
-
-		static struct rte_sched_subport_params subport_params = {
-			.tb_rate = 305175, //1250000000,
-			.tb_size = 1000000,
-			.tc_rate = {305175, 305175, 305175, 305175}, //{1250000000, 1250000000, 1250000000, 1250000000},
-			.tc_period = 10,
-		};
+		memcpy(port_params.qsize, qsize, sizeof(uint16_t) * RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE);
 
 		scheduler = rte_sched_port_config(&port_params);
 		if (scheduler == NULL){
 			rte_exit(EXIT_FAILURE, "Unable to config sched port\nError: %s\n", rte_strerror(rte_errno));
 		}
 
-		int err = rte_sched_subport_config(scheduler, 0, &subport_params);
-		if (err != 0) {
-			rte_exit(EXIT_FAILURE, "Unable to config sched subport\nError: %d\n", err);
+		while (1) {
+			struct rte_sched_subport_params* subport_params = pop_ll(&subports);
+			// fprintf(stderr, "HERE\n");
+			if (subport_params == NULL) break;
+			int err = rte_sched_subport_config(scheduler, 0, subport_params);
+			if (err != 0) {
+				rte_exit(EXIT_FAILURE, "Unable to config sched subport\nError: %d\n", err);
+			}
+			free(subport_params);
 		}
 	}
 
@@ -239,7 +311,7 @@ int main(int argc, char *argv[]) {
 		rte_eal_remote_launch(lcore_main_generate_packets, &generatorConfigs[coreNum++], lcore_id);
 	}
 
-	lcore_main_QOS(generatorConfigs, numGenerators, numQoSDequeue);
+	lcore_main_QOS(generatorConfigs, numGenerators, numQoSDequeue, sleeptime);
 
 	// RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 	// 	rte_eal_wait_lcore(lcore_id);
